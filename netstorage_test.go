@@ -4,19 +4,6 @@ import (
 	"testing"
 )
 
-const KeyName = "api-user"
-const Secret = "secret"
-
-func Test_List(t *testing.T) {
-	cpcode := uint(123)
-
-	api := NewApi(KeyName, Secret)
-	err := api.List(cpcode, "/", 10)
-	if err != nil {
-		t.Error(err.Error())
-	}
-}
-
 func Test_Signing(t *testing.T) {
 	// spec page 15
 	key := "key1"
@@ -26,7 +13,9 @@ func Test_Signing(t *testing.T) {
 	id := 382644692
 	timestamp := 1280000000
 	const expected_data = "5, 0.0.0.0, 0.0.0.0, 1280000000, 382644692, key1"
-	const expected_signature = "vuCWPzdEW5OUlH1rLfHokWAZAWSdaGTM8yX3bgIDWtA="
+	// spec says expected is "vuCWPzdEW5OUlH1rLfHokWAZAWSdaGTM8yX3bgIDWtA="
+	// but contact says it's "Ix98xZYkwygidinpmtKVk9+xPNn5QjozWDMROLjVWSo=" which seems to be the correct one
+	const expected_signature = "Ix98xZYkwygidinpmtKVk9+xPNn5QjozWDMROLjVWSo="
 	api := NewApi(key, secret)
 	data, signature := api.sign(rel_path, action, id, timestamp)
 	if data != expected_data {
@@ -35,5 +24,4 @@ func Test_Signing(t *testing.T) {
 	if signature != expected_signature {
 		t.Errorf("exected signature: %s\nreal signature: %s\ndata: %s", expected_signature, signature, data)
 	}
-
 }

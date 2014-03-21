@@ -4,11 +4,15 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/xml"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
+	"code.google.com/p/go.text/encoding/charmap"
+	"code.google.com/p/go.text/transform"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -59,34 +63,65 @@ func (api Api) sign(rel_path, action string, id, timestamp int) (data, signature
 	data = fmt.Sprintf("5, 0.0.0.0, 0.0.0.0, %d, %d, %s", timestamp, id, api.KeyName)
 	sign_string := rel_path + "\n" + "x-akamai-acs-action:" + action + "\n"
 	mac := hmac.New(sha256.New, []byte(api.Secret))
-	fmt.Println("writing to checksum")
-	fmt.Println(data + sign_string)
 	mac.Write([]byte(data + sign_string))
 	signature = base64.StdEncoding.EncodeToString(mac.Sum(nil))
 	return
 }
 
-// path: begin response output with noted subdirectory
-func (api Api) List(cpcode uint, path string, limit uint) error {
-	storage_group_name := ""
+type AkFile struct {
+	Type  string `xml:"type,attr"`
+	Name  string `xml:"name,attr"`
+	Size  int    `xml:"size,attr"`
+	Md5   string `xml:"md5,attr"`
+	Mtime uint32 `xml:"mtime,attr"`
+}
+type Resume struct {
+	Start string `xml:"start,attr"`
+}
+type ListResponse struct {
+	File   []AkFile `xml:"file"`
+	Resume Resume   `xml:"resume"`
+}
 
-	host := storage_group_name + "-nsu.akamaihd.net"
+// path: begin response output with noted subdirectory
+// resume: resume from this point (takes precedence over path)
+func (api Api) List(cpcode uint, storage_group, path, resume string, limit uint) (listResp ListResponse, err error) {
+	host := storage_group + "-nsu.akamaihd.net"
 	action := fmt.Sprintf("version=%s&action=list&format=xml&max_entries=%d", version, limit)
-	rel_path := fmt.Sprintf("/%d/%s", cpcode, path)
+	var rel_path string
+	if resume != "" {
+		rel_path = resume
+	} else {
+		if strings.HasPrefix(path, "/") {
+			path = path[1:]
+		}
+		rel_path = fmt.Sprintf("/%d/%s", cpcode, path)
+	}
 	abs_path := "http://" + host + rel_path
-	fmt.Println(abs_path)
 	req, err := http.NewRequest("GET", abs_path, nil)
 	req.Header.Add("X-Akamai-ACS-Action", action)
 	api.auth(req, rel_path, action)
 	resp, err := api.client.Do(req)
 	if err != nil {
-		return err
+		return
 	}
 	if resp.StatusCode == http.StatusForbidden {
-		return NewHTTPError(resp)
+		err = NewHTTPError(resp)
+		return
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	fmt.Println(body)
-	return nil
+
+	decoder := xml.NewDecoder(resp.Body)
+
+	// from http://grokbase.com/t/gg/golang-nuts/13bds55y8f/go-nuts-xml-parser
+	decoder.CharsetReader = func(charset string, input io.Reader) (io.Reader, error) {
+		// Windows-1252 is a superset of ISO-8859-1.
+		if charset == "iso-8859-1" || charset == "ISO-8859-1" {
+			return transform.NewReader(input, charmap.Windows1252.NewDecoder()), nil
+		}
+		return nil, fmt.Errorf("unsupported charset: %q", charset)
+	}
+
+	err = decoder.Decode(&listResp)
+	return
 }
