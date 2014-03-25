@@ -1,6 +1,8 @@
 package netstorage
 
 import (
+	"code.google.com/p/go.text/encoding/charmap"
+	"code.google.com/p/go.text/transform"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -8,8 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"code.google.com/p/go.text/encoding/charmap"
-	"code.google.com/p/go.text/transform"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -103,6 +103,7 @@ func (api Api) List(cpcode uint, storage_group, path, resume string, limit uint)
 	api.auth(req, rel_path, action)
 	resp, err := api.client.Do(req)
 	if err != nil {
+		err = errors.New(fmt.Sprintf("GET '%s' failed: %s", abs_path, err.Error()))
 		return
 	}
 	if resp.StatusCode == http.StatusForbidden {
@@ -123,5 +124,9 @@ func (api Api) List(cpcode uint, storage_group, path, resume string, limit uint)
 	}
 
 	err = decoder.Decode(&listResp)
+	if err != nil {
+		err = errors.New(fmt.Sprintf("response of GET '%s' decode error: %s", abs_path, err.Error()))
+	}
 	return
+
 }
