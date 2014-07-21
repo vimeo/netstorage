@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
+	"net/http/httputil"
 	"strings"
 	"time"
 )
@@ -27,6 +29,14 @@ func NewHTTPError(resp *http.Response) *httpError {
 	code := resp.StatusCode
 	return &httpError{
 		error: errors.New(http.StatusText(code)),
+		code:  code,
+	}
+}
+
+func NewHTTPErrorWithText(resp *http.Response, txt string) *httpError {
+	code := resp.StatusCode
+	return &httpError{
+		error: errors.New(http.StatusText(code) + " - " + txt),
 		code:  code,
 	}
 }
@@ -83,9 +93,16 @@ type ListResponse struct {
 	Resume Resume   `xml:"resume"`
 }
 
+type ReqFail struct {
+	Ip   string
+	Msg  string
+	Req  []byte // *http.Request
+	Resp []byte // *http.Response
+}
+
 // path: begin response output with noted subdirectory
 // resume: resume from this point (takes precedence over path)
-func (api Api) List(cpcode uint, storage_group, path, resume string, limit uint) (listResp ListResponse, err error) {
+func (api Api) List(cpcode uint, storage_group, path, resume string, limit uint, bad_req chan ReqFail) (listResp ListResponse, err error) {
 	host := storage_group + "-nsu.akamaihd.net"
 	action := fmt.Sprintf("version=%s&action=list&format=xml&max_entries=%d", version, limit)
 	var rel_path string
@@ -97,20 +114,44 @@ func (api Api) List(cpcode uint, storage_group, path, resume string, limit uint)
 		}
 		rel_path = fmt.Sprintf("/%d/%s", cpcode, path)
 	}
+	ip_info, _ := net.LookupHost(host)
+	ip := ip_info[0]
 	abs_path := "http://" + host + rel_path
 	req, err := http.NewRequest("GET", abs_path, nil)
 	req.Header.Add("X-Akamai-ACS-Action", action)
 	api.auth(req, rel_path, action)
-	resp, err := api.client.Do(req)
+	dumpReq, err := httputil.DumpRequestOut(req, true)
 	if err != nil {
-		err = errors.New(fmt.Sprintf("GET '%s' failed: %s", abs_path, err.Error()))
-		return
+		dumpReq = []byte(fmt.Sprintf("ERROR: could not dump http request: %s", err.Error()))
 	}
-	if resp.StatusCode == http.StatusForbidden {
-		err = NewHTTPError(resp)
-		return
-	}
+	resp, err := api.client.Do(req)
 	defer resp.Body.Close()
+	var dumpResp []byte
+	if resp != nil {
+		dumpResp, err = httputil.DumpResponse(resp, true)
+		if err != nil {
+			dumpResp = []byte(fmt.Sprintf("ERROR: could not dump http response: %s", err.Error()))
+		}
+	}
+	if err != nil {
+		errMsg := fmt.Sprintf("GET '%s' failed: %s", abs_path, err.Error())
+		err = errors.New(errMsg)
+		if bad_req != nil {
+			bad_req <- ReqFail{ip, "ERROR: " + errMsg, dumpReq, dumpResp}
+		}
+		return
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp_bytes := make([]byte, 50)
+		var bytes_read int
+		bytes_read, err = resp.Body.Read(resp_bytes)
+		resp_string := string(resp_bytes[:bytes_read])
+		err = NewHTTPErrorWithText(resp, resp_string)
+		if bad_req != nil {
+			bad_req <- ReqFail{ip, "BAD STATUSCODE: " + err.Error(), dumpReq, dumpResp}
+		}
+		return
+	}
 
 	decoder := xml.NewDecoder(resp.Body)
 
@@ -126,7 +167,9 @@ func (api Api) List(cpcode uint, storage_group, path, resume string, limit uint)
 	err = decoder.Decode(&listResp)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("response of GET '%s' decode error: %s", abs_path, err.Error()))
+		if bad_req != nil {
+			bad_req <- ReqFail{ip, err.Error(), dumpReq, dumpResp}
+		}
 	}
 	return
-
 }
